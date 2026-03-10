@@ -1,0 +1,13 @@
+# Ignore stuff in outdir
+out/
+
+# Ignore stray configuration files
+config.toml
+
+# Ignore vim buffer files
+*.swp
+*.swo
+
+# Ignore old or backed-up files
+*.old
+*.bak
