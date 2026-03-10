@@ -1,6 +1,6 @@
 module github.com/dnstapir/tapir-analyse-lib
 
-go 1.25.6
+go 1.26.1
 
 require (
 	github.com/dnstapir/edm v0.0.0-20260226140325-d0441597d9e7
