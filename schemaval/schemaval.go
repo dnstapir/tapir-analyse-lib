@@ -42,7 +42,7 @@ func Create(conf Conf) (*schemaval, error) {
 	} else {
 		s.log = conf.Log
 	}
-	defer s.log.Debug("%s: debug logging enabled", s.id)
+	s.log.Debug("%s: debug logging enabled", s.id)
 
 	if conf.SchemaDir == "" {
 		if s.allowNoSchema {
@@ -67,10 +67,13 @@ func Create(conf Conf) (*schemaval, error) {
 	c := jsonschema.NewCompiler()
 
 	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
 		fullName := filepath.Join(conf.SchemaDir, file.Name())
 		schema, err := c.Compile(fullName)
 		if err != nil {
-			s.log.Error("Compiling schema %s failed: %s", file, err)
+			s.log.Error("Compiling schema %s failed: %s", file.Name(), err)
 			return nil, err
 		}
 

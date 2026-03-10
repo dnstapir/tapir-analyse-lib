@@ -16,7 +16,11 @@ fmt:
 	go fmt ./...
 
 checkfmt:
-	@gofmt -l ./
+	@files=$$(gofmt -l ./); \
+	if [ -n "$$files" ]; then \
+		printf '%s\n' "$$files"; \
+		exit 1; \
+	fi
 
 
 vet:

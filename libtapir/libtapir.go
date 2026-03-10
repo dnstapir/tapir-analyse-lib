@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"time"
 
@@ -44,8 +45,8 @@ func New(conf Conf) *libtapir {
 
 func (lt *libtapir) ExtractDomain(msgJson []byte) (string, error) {
 	var newQnameEvent protocols.NewQnameJSON
-	dec := json.NewDecoder(bytes.NewReader(msgJson))
 
+	dec := json.NewDecoder(bytes.NewReader(msgJson))
 	dec.DisallowUnknownFields()
 
 	err := dec.Decode(&newQnameEvent)
@@ -54,10 +55,19 @@ func (lt *libtapir) ExtractDomain(msgJson []byte) (string, error) {
 		return "", err
 	}
 
+	_, err = dec.Token()
+	if err != io.EOF {
+		return "", common.ErrBadJSON
+	}
+
 	return lt.NormalizeDomainName(newQnameEvent.Qname), nil
 }
 
 func (lt *libtapir) GenerateObservationMsg(domainStr string, flags uint32, ttl int) (string, error) {
+	if ttl <= 0 {
+		lt.log.Error("Bad TTL value '%d' when generating observation message", ttl)
+		return "", common.ErrBadParam
+	}
 	dom := domain{
 		Name:         domainStr,
 		TimeAdded:    time.Now(),
@@ -92,20 +102,22 @@ func (lt *libtapir) ExtractObservations(data []byte) (map[string]uint32, error) 
 	var msg tapirMsg
 
 	dec := json.NewDecoder(bytes.NewReader(data))
-	if dec == nil {
-		lt.log.Error("Problem creating decoder for json data")
-		return nil, errors.New("bad json")
-	}
-
 	dec.DisallowUnknownFields()
+
 	err := dec.Decode(&msg)
 	if err != nil {
 		lt.log.Error("Problem decoding JSON: %s", err)
 		return nil, err
 	}
 
+	_, err = dec.Token()
+	if err != io.EOF {
+		return nil, common.ErrBadJSON
+	}
+
 	for _, d := range msg.Added {
-		obs[lt.NormalizeDomainName(d.Name)] = d.TagMask
+		name := lt.NormalizeDomainName(d.Name)
+		obs[name] |= d.TagMask
 	}
 
 	if len(obs) == 0 {

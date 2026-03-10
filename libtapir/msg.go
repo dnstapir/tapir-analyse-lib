@@ -17,7 +17,7 @@ type tapirMsg struct {
 }
 
 type domain struct {
-	Name         string
+	Name         string    `json:"name"`
 	TimeAdded    time.Time `json:"time_added"`
 	TTL          int       `json:"ttl"`
 	TagMask      uint32    `json:"tag_mask"`
