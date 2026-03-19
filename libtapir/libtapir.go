@@ -136,3 +136,13 @@ func (lt *libtapir) NormalizeDomainName(name string) string {
 
 	return nameNormalized
 }
+
+func (lt *libtapir) NormalizeDomainNameSuffix(suffix string) string {
+	// make sure domain name starts and ends with "." and is all lowercase
+	normalized := lt.NormalizeDomainName(suffix)
+	if normalized == "." {
+		return "."
+	}
+
+	return "." + normalized
+}
