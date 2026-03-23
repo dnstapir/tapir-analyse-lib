@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/lestrrat-go/jwx/v3/jwk"
+	"github.com/lestrrat-go/jwx/v3/jws"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/dnstapir/tapir-analyse-lib/common"
@@ -15,23 +17,26 @@ import (
 const c_ID = "tal-validator"
 
 type Conf struct {
-	Debug         bool   `toml:"debug"`
-	SchemaDir     string `toml:"schema_dir"`
-	AllowNoSchema bool   `toml:"allow_no_schema"`
-	Log           common.Logger
+	Debug            bool   `toml:"debug"`
+	SchemaDir        string `toml:"schema_dir"`
+	AllowNoSchema    bool   `toml:"allow_no_schema"`
+	AllowNoVerKeys   bool   `toml:"allow_no_verification_keys"`
+	VerificationKeys string `toml:"verification_keys"`
+	SigningKey       string `toml:"signing_key"`
+	Log              common.Logger
 }
 
 type schemaval struct {
-	id            string
-	log           common.Logger
-	allowNoSchema bool
-	schemas       map[string]*jsonschema.Schema
+	id         string
+	log        common.Logger
+	schemas    map[string]*jsonschema.Schema
+	verkeys    jwk.Set
+	signingKey jwk.Key
 }
 
 func Create(conf Conf) (*schemaval, error) {
 	s := new(schemaval)
 	s.id = c_ID
-	s.allowNoSchema = conf.AllowNoSchema
 
 	if conf.Log == nil {
 		log := logger.New(
@@ -44,48 +49,100 @@ func Create(conf Conf) (*schemaval, error) {
 	}
 	s.log.Debug("%s: debug logging enabled", s.id)
 
-	if conf.SchemaDir == "" {
-		if s.allowNoSchema {
-			s.log.Warning("No schemadir specified, will accept anything")
-			return s, nil
+	if conf.VerificationKeys == "" {
+		if conf.AllowNoVerKeys {
+			s.log.Warning("No verification keys specified, will not check signatures")
+			s.verkeys = nil
 		} else {
 			return nil, common.ErrBadParam
 		}
-	}
-
-	files, err := os.ReadDir(conf.SchemaDir)
-	if err != nil {
-		s.log.Error("Error reading schema dir %s", conf.SchemaDir)
-		return nil, err
-	}
-	if len(files) == 0 {
-		s.log.Error("No schemas found in %s", conf.SchemaDir)
-		return nil, errors.New("no schemas found")
-	}
-
-	s.schemas = make(map[string]*jsonschema.Schema)
-	c := jsonschema.NewCompiler()
-
-	for _, file := range files {
-		if file.IsDir() {
-			continue
-		}
-		fullName := filepath.Join(conf.SchemaDir, file.Name())
-		schema, err := c.Compile(fullName)
+	} else {
+		keys, err := jwk.ReadFile(conf.VerificationKeys)
 		if err != nil {
-			s.log.Error("Compiling schema %s failed: %s", file.Name(), err)
+			s.log.Error("Couldn't read verification keys file: %s", err)
+			return nil, errors.New("bad verification keys file")
+		}
+		s.verkeys = keys
+		s.log.Info("Read %d verification keys", s.verkeys.Len())
+	}
+
+	if conf.SchemaDir == "" {
+		if conf.AllowNoSchema {
+			s.log.Warning("No schemadir specified, will accept anything")
+			s.schemas = nil
+		} else {
+			return nil, common.ErrBadParam
+		}
+	} else {
+		files, err := os.ReadDir(conf.SchemaDir)
+		if err != nil {
+			s.log.Error("Error reading schema dir %s", conf.SchemaDir)
+			return nil, err
+		}
+		if len(files) == 0 {
+			s.log.Error("No schemas found in %s", conf.SchemaDir)
+			return nil, errors.New("no schemas found")
+		}
+
+		s.schemas = make(map[string]*jsonschema.Schema)
+		c := jsonschema.NewCompiler()
+
+		for _, file := range files {
+			if file.IsDir() {
+				continue
+			}
+			fullName := filepath.Join(conf.SchemaDir, file.Name())
+			schema, err := c.Compile(fullName)
+			if err != nil {
+				s.log.Error("Compiling schema %s failed: %s", file.Name(), err)
+				return nil, err
+			}
+
+			s.schemas[schema.ID] = schema
+		}
+	}
+
+	if conf.SigningKey == "" {
+		s.log.Warning("No signing key specified, will not be able to sign messages")
+	} else {
+		keyFile, err := os.ReadFile(conf.SigningKey)
+		if err != nil {
+			s.log.Error("Could not read signing key file, err: '%s'", err)
 			return nil, err
 		}
 
-		s.schemas[schema.ID] = schema
+		keyParsed, err := jwk.ParseKey(keyFile)
+		if err != nil {
+			s.log.Error("Could not parse signing key file, err: '%s'", err)
+			return nil, err
+		}
+
+		isPrivate, err := jwk.IsPrivateKey(keyParsed)
+		if err != nil {
+			s.log.Error("Could not check if key is private, err: '%s'", err)
+			return nil, err
+		}
+
+		if !isPrivate {
+			s.log.Error("Signing key file '%s' is not private", conf.SigningKey)
+			return nil, errors.New("signing key must be private")
+		}
+
+		_, hasAlg := keyParsed.Algorithm()
+		if !hasAlg {
+			s.log.Error("Signing key missing an \"alg\" field")
+			return nil, common.ErrBadJWK
+		}
+
+		s.signingKey = keyParsed
 	}
 
 	return s, nil
 }
 
 func (s *schemaval) ValidateWithID(data []byte, id string) bool {
-	if s.schemas == nil && s.allowNoSchema {
-		s.log.Debug("Proper validation of %d bytes skipped", len(data))
+	if s.schemas == nil {
+		s.log.Warning("Proper validation of %d bytes skipped", len(data))
 		return true
 	}
 
@@ -109,4 +166,35 @@ func (s *schemaval) ValidateWithID(data []byte, id string) bool {
 	}
 
 	return true
+}
+
+func (s *schemaval) VerifySignature(sig []byte) ([]byte, error) {
+	if s.verkeys == nil {
+		s.log.Error("Skipping signature verification of %d bytes", len(sig))
+		return nil, common.ErrNotCompleted
+	}
+
+	data, err := jws.Verify(sig, jws.WithKeySet(s.verkeys))
+	if err != nil {
+		s.log.Error("Could not verify data: %s", err)
+		return nil, err
+	}
+
+	return data, nil
+}
+
+func (s *schemaval) SignData(data []byte) ([]byte, error) {
+	if s.signingKey == nil {
+		s.log.Error("No signing key configured.")
+		return nil, common.ErrNotCompleted
+	}
+
+	alg, _ := s.signingKey.Algorithm()
+	signedData, err := jws.Sign(data, jws.WithJSON(), jws.WithKey(alg, s.signingKey))
+	if err != nil {
+		s.log.Error("Couldn't sign data: %s", err)
+		return nil, err
+	}
+
+	return signedData, nil
 }

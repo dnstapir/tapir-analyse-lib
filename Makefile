@@ -2,11 +2,11 @@ OUT:=$(CURDIR)/out
 
 .PHONY: all build outdir test coverage fmt vet clean ko
 
-outdir:
-	-mkdir -p $(OUT)
-
 test:
 	go test ./...
+
+outdir:
+	-mkdir -p $(OUT)
 
 coverage: outdir
 	go test -coverprofile=$(OUT)/coverage.out ./...
