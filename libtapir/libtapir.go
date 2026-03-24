@@ -68,7 +68,7 @@ func (lt *libtapir) GenerateObservationMsg(domainStr string, flags uint32, ttl i
 		lt.log.Error("Bad TTL value '%d' when generating observation message", ttl)
 		return "", common.ErrBadParam
 	}
-	dom := domain{
+	dom := common.FlaggedDomain{
 		Name:         domainStr,
 		TimeAdded:    time.Now(),
 		TTL:          ttl,
@@ -76,13 +76,13 @@ func (lt *libtapir) GenerateObservationMsg(domainStr string, flags uint32, ttl i
 		ExtendedTags: []string{},
 	}
 
-	tapirMsg := tapirMsg{
+	tapirMsg := common.TapirObs{
 		SrcName:   "dns-tapir",
 		Creator:   "observation-encoder",
 		MsgType:   "observation",
 		ListType:  "doubtlist",
-		Added:     []domain{dom},
-		Removed:   []domain{},
+		Added:     []common.FlaggedDomain{dom},
+		Removed:   []common.FlaggedDomain{},
 		Msg:       "",
 		TimeStamp: time.Now(),
 		TimeStr:   "",
@@ -99,7 +99,7 @@ func (lt *libtapir) GenerateObservationMsg(domainStr string, flags uint32, ttl i
 
 func (lt *libtapir) ExtractObservations(data []byte) (map[string]uint32, error) {
 	obs := make(map[string]uint32)
-	var msg tapirMsg
+	var msg common.TapirObs
 
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
