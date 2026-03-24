@@ -1,0 +1,9 @@
+{
+  "flags": 33155,
+  "qclass": 1,
+  "qname": "dnstapir.xa.",
+  "qtype": 28,
+  "timestamp": "2026-03-23T11:50:07+00:00",
+  "type": "new_qname",
+  "version": 0
+}

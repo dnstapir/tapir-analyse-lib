@@ -1,0 +1,9 @@
+{
+    "use":"sig",
+    "kty":"EC",
+    "kid":"test-noalg",
+    "crv":"P-256",
+    "x":"nFI6Ux7LOEYX8VmWA332h8TAev1XwdR1E-TrB-TI--k",
+    "y":"uOLs9R4hDKF-2KRDhhu-hYcz_atQiVGjAWuv-iSQ0I8",
+    "d":"3PFw8lSRpxtxVfgNT5dJXGyoIUTftCFVsPHJ9u59Igw"
+}
