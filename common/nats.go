@@ -1,5 +1,9 @@
 package common
 
+import (
+	"strings"
+)
+
 const NATSHEADER_KEY_IDENTIFIER = "DNSTAPIR-Key-Identifier"
 const NATSHEADER_KEY_THUMBPRINT = "DNSTAPIR-Key-Thumbprint"
 const NATSHEADER_MSG_SCHEMA = "DNSTAPIR-Message-Schema"
@@ -18,4 +22,16 @@ type NatsMsg struct {
 	Headers map[string]string
 	Subject string
 	Data    []byte
+}
+
+func NormalizeNatsSubject(subject string) string {
+	nameLowered := strings.ToLower(subject)
+	nameTrimmed := strings.Trim(nameLowered, ".")
+	nameNormalized := nameTrimmed
+
+	return nameNormalized
+}
+
+func NormalizeNatsSubjectPrefix(subject string) string {
+	return NormalizeNatsSubject(subject)
 }
