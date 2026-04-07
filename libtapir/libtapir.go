@@ -5,45 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/dnstapir/edm/pkg/protocols" // TODO replace with local implementation?
 
 	"github.com/dnstapir/tapir-analyse-lib/common"
-	"github.com/dnstapir/tapir-analyse-lib/logger"
 )
 
-const c_ID = "tal-libtapir"
-
-type Conf struct {
-	Log   common.Logger
-	Debug bool `toml:"debug"`
-}
-
-type libtapir struct {
-	id  string
-	log common.Logger
-}
-
-func New(conf Conf) *libtapir {
-	lt := new(libtapir)
-	lt.id = c_ID
-	if conf.Log == nil {
-		log := logger.New(
-			logger.Conf{
-				Debug: conf.Debug,
-			})
-		lt.log = log
-	} else {
-		lt.log = conf.Log
-	}
-	defer lt.log.Debug("%s: debug logging enabled", lt.id)
-
-	return lt
-}
-
-func (lt *libtapir) ExtractDomain(msgJson []byte) (string, error) {
+func ExtractDomain(msgJson []byte) (string, error) {
 	var newQnameEvent protocols.NewQnameJSON
 
 	dec := json.NewDecoder(bytes.NewReader(msgJson))
@@ -51,7 +22,6 @@ func (lt *libtapir) ExtractDomain(msgJson []byte) (string, error) {
 
 	err := dec.Decode(&newQnameEvent)
 	if err != nil {
-		lt.log.Error("Error decoding qname from 'new qname event' msg")
 		return "", err
 	}
 
@@ -60,12 +30,11 @@ func (lt *libtapir) ExtractDomain(msgJson []byte) (string, error) {
 		return "", common.ErrBadJSON
 	}
 
-	return lt.NormalizeDomainName(newQnameEvent.Qname), nil
+	return NormalizeDomainName(newQnameEvent.Qname), nil
 }
 
-func (lt *libtapir) GenerateObservationMsg(domainStr string, flags uint32, ttl int) (string, error) {
+func GenerateObservationMsg(domainStr string, flags uint32, ttl int) (string, error) {
 	if ttl <= 0 {
-		lt.log.Error("Bad TTL value '%d' when generating observation message", ttl)
 		return "", common.ErrBadParam
 	}
 	dom := common.FlaggedDomain{
@@ -90,14 +59,13 @@ func (lt *libtapir) GenerateObservationMsg(domainStr string, flags uint32, ttl i
 
 	outMsg, err := json.Marshal(tapirMsg)
 	if err != nil {
-		lt.log.Error("Error serializing message, discarding...")
 		return "", err
 	}
 
 	return string(outMsg), nil
 }
 
-func (lt *libtapir) ExtractObservations(data []byte) (map[string]uint32, error) {
+func ExtractObservations(data []byte) (map[string]uint32, error) {
 	obs := make(map[string]uint32)
 	var msg common.TapirObs
 
@@ -106,7 +74,6 @@ func (lt *libtapir) ExtractObservations(data []byte) (map[string]uint32, error) 
 
 	err := dec.Decode(&msg)
 	if err != nil {
-		lt.log.Error("Problem decoding JSON: %s", err)
 		return nil, err
 	}
 
@@ -116,20 +83,19 @@ func (lt *libtapir) ExtractObservations(data []byte) (map[string]uint32, error) 
 	}
 
 	for _, d := range msg.Added {
-		name := lt.NormalizeDomainName(d.Name)
+		name := NormalizeDomainName(d.Name)
 		obs[name] |= d.TagMask
 	}
 
 	if len(obs) == 0 {
-		lt.log.Error("Data contained no observations")
 		return nil, errors.New("no observations found")
 	}
 
 	return obs, nil
 }
 
-func (lt *libtapir) NormalizeDomainName(name string) string {
-	// make sure domain name ends with "." and is all lowercase
+func NormalizeDomainName(name string) string {
+	/* make sure domain name ends with "." and is all lowercase */
 	nameLowered := strings.ToLower(name)
 	nameTrimmed := strings.Trim(nameLowered, ".*")
 	nameNormalized := nameTrimmed + "."
@@ -137,12 +103,28 @@ func (lt *libtapir) NormalizeDomainName(name string) string {
 	return nameNormalized
 }
 
-func (lt *libtapir) NormalizeDomainNameSuffix(suffix string) string {
-	// make sure domain name starts and ends with "." and is all lowercase
-	normalized := lt.NormalizeDomainName(suffix)
+func NormalizeDomainNameSuffix(suffix string) string {
+	/* make sure domain name starts and ends with "." and is all lowercase */
+	normalized := NormalizeDomainName(suffix)
 	if normalized == "." {
 		return "."
 	}
 
 	return "." + normalized
+}
+
+func FlipDomainName(domain string) string {
+	norm := NormalizeDomainName(domain)
+	labels := strings.Split(norm, ".")
+	nonEmpty := make([]string, 0, len(labels))
+	for _, l := range labels {
+		if l != "" {
+			nonEmpty = append(nonEmpty, l)
+		}
+	}
+	if len(nonEmpty) == 0 {
+		return "."
+	}
+	slices.Reverse(nonEmpty)
+	return strings.Join(nonEmpty, ".")
 }
