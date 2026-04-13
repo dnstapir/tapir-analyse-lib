@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/net/publicsuffix"
+
 	"github.com/dnstapir/edm/pkg/protocols" // TODO replace with local implementation?
 
 	"github.com/dnstapir/tapir-analyse-lib/common"
@@ -127,4 +129,21 @@ func FlipDomainName(domain string) string {
 	}
 	slices.Reverse(nonEmpty)
 	return strings.Join(nonEmpty, ".")
+}
+
+func HasValidETLD(fqdn string) bool {
+	normalized := NormalizeDomainName(fqdn)
+
+	/* Normalization ensures a trailing dot, but PSL does not like that */
+	trimmed := strings.Trim(normalized, ".")
+	eTLD, icann := publicsuffix.PublicSuffix(trimmed)
+
+	valid := false
+	if icann {
+		valid = true
+	} else if strings.IndexByte(eTLD, '.') >= 0 {
+		valid = true
+	}
+
+	return valid
 }
