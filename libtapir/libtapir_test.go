@@ -18,6 +18,8 @@ func TestNormalizeDomainName(t *testing.T) {
 		{"asterisk_nodot", "*example.xa", "example.xa."},
 		{"many_dots", ".....example.xa....", "example.xa."},
 		{"many_dots_only", ".........", "."},
+		{"whitespace", "    myexample.xa.\n", "myexample.xa."},
+		{"whitespace-trailing", "myexample.xa.\n", "myexample.xa."},
 	}
 
 	for _, tt := range tests {
