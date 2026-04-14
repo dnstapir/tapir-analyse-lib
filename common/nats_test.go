@@ -24,6 +24,7 @@ func TestNormalizeNatsSubject(t *testing.T) {
 		{"trailing_dot_2", "test.subject.*", "test.subject.*"},
 		{"starting_dot_1", ".test.subject.>", "test.subject.>"},
 		{"starting_dot_2", ".test.subject.*", "test.subject.*"},
+		{"whitespace", " test.subject\n", "test.subject"},
 	}
 
 	for _, tt := range tests {

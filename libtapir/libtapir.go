@@ -98,7 +98,7 @@ func ExtractObservations(data []byte) (map[string]uint32, error) {
 
 func NormalizeDomainName(name string) string {
 	/* make sure domain name ends with "." and is all lowercase */
-	nameLowered := strings.ToLower(name)
+	nameLowered := strings.ToLower(strings.TrimSpace(name))
 	nameTrimmed := strings.Trim(nameLowered, ".*")
 	nameNormalized := nameTrimmed + "."
 

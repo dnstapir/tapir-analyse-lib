@@ -25,7 +25,7 @@ type NatsMsg struct {
 }
 
 func NormalizeNatsSubject(subject string) string {
-	nameLowered := strings.ToLower(subject)
+	nameLowered := strings.ToLower(strings.TrimSpace(subject))
 	nameTrimmed := strings.Trim(nameLowered, ".")
 	nameNormalized := nameTrimmed
 
