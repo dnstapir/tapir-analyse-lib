@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"sync"
@@ -18,14 +19,6 @@ import (
 	"github.com/dnstapir/tapir-analyse-lib/logger"
 )
 
-//// observation-encoder
-//type nats interface {
-//	WatchObservations(context.Context) (<-chan common.NatsMsg, error)
-//	RemovePrefix(string) string
-//	GetObservations(context.Context, string) (uint32, int, error)
-//	SendSouthboundObservation(string) error
-//}
-
 type Conf struct {
 	Debug                    bool                `toml:"debug"`
 	Url                      string              `toml:"url"`
@@ -34,6 +27,7 @@ type Conf struct {
 	ObservationBuckets       []ObservationBucket `toml:"observation_buckets"`
 	SeenDomainsBucket        Bucket              `toml:"seen_domains_bucket"`
 	SeenDomainsSubjectPrefix string              `toml:"seen_domains_subject_prefix"`
+	SubjectSouthbound        string              `toml:"subject_southbound"`
 	PrivateSubjectPrefix     string              `toml:"private_subject_prefix"`
 	PrivateBucket            Bucket              `toml:"private_bucket"`
 	AnalystID                string
@@ -62,13 +56,15 @@ type natsClient struct {
 	observationSubjectPrefix string
 	kvSeenDomains            jetstream.KeyValue
 	seenDomainsSubjectPrefix string
+	subjectSouthbound        string
 	kvPrivate                jetstream.KeyValue // TODO currently unused
 	privateSubjectPrefix     string
+	watchersWG               sync.WaitGroup
 }
 
 type obsKvMap struct {
-	sync.RWMutex
-	m map[string]jetstream.KeyValue
+	sync.RWMutex // Needed? We only ever write during startup
+	m            map[string]jetstream.KeyValue
 }
 
 func Create(conf Conf) (*natsClient, error) {
@@ -85,11 +81,10 @@ func Create(conf Conf) (*natsClient, error) {
 	}
 	nc.log.Debug("NATS debug logging enabled")
 
-	if conf.AnalystID == "" {
-		nc.log.Error("Bad analyst ID when creating NATS client")
-		return nil, common.ErrBadParam
-	}
 	nc.analystID = conf.AnalystID
+	if nc.analystID == "" {
+		nc.log.Info("No analyst identifier  configured. Functionality will be limited.")
+	}
 
 	if conf.Url == "" {
 		nc.log.Error("Bad URL when creating NATS client")
@@ -145,6 +140,11 @@ func Create(conf Conf) (*natsClient, error) {
 			return nil, err
 		}
 		nc.kvSeenDomains = kvSeenDom
+	}
+
+	nc.subjectSouthbound = strings.Trim(conf.SubjectSouthbound, common.NATS_DELIM)
+	if nc.subjectSouthbound == "" {
+		nc.log.Info("No southbound subject configured. Functionality will be limited.")
 	}
 
 	nc.okvMap.Lock()
@@ -219,6 +219,7 @@ func (nc *natsClient) ActivateSubscription(ctx context.Context) (<-chan common.N
 }
 
 func (nc *natsClient) Shutdown() error {
+	nc.watchersWG.Wait()
 	if nc.conn != nil {
 		nc.conn.Close()
 	}
@@ -226,6 +227,11 @@ func (nc *natsClient) Shutdown() error {
 }
 
 func (nc *natsClient) SetObservation(ctx context.Context, domain, obs string) error {
+	if nc.analystID == "" {
+		nc.log.Error("Attempted to set observation without having an analyst ID configured")
+		return common.ErrNotCompleted
+	}
+
 	nc.okvMap.RLock()
 	kv, ok := nc.okvMap.m[obs]
 	nc.okvMap.RUnlock()
@@ -323,6 +329,162 @@ func (nc *natsClient) AddDomain(ctx context.Context, domain string, reporter str
 	return found, nil
 }
 
+func (nc *natsClient) WatchObservations(ctx context.Context) (<-chan common.NatsMsg, error) {
+	aggrKeyChan := make(chan jetstream.KeyValueEntry, 128) // TODO adjustable buffer size?
+	outCh := make(chan common.NatsMsg, 32)                 // TODO adjustable buffer size?
+	atLeastOneBucket := false
+
+	nc.okvMap.RLock()
+	okvm := nc.okvMap.m
+	nc.okvMap.RUnlock()
+	for _, kv := range okvm {
+		subjectParts := []string{nc.observationSubjectPrefix, common.NATS_GLOB}
+		subject := strings.Join(subjectParts, common.NATS_DELIM)
+		w, err := kv.Watch(ctx, subject, jetstream.UpdatesOnly())
+		if err != nil {
+			nc.log.Error("Couldn't watch bucket %s: '%s'. Skipping...", kv.Bucket(), err)
+			continue
+		} else {
+			atLeastOneBucket = true
+		}
+
+		nc.watchersWG.Go(func() {
+			for k := range w.Updates() {
+				select {
+				case aggrKeyChan <- k:
+				case <-ctx.Done():
+					return
+				}
+			}
+			nc.log.Info("Watcher for bucket %s stopping", kv.Bucket())
+		})
+
+		nc.log.Info("Watching bucket '%s'", kv.Bucket())
+	}
+
+	nc.watchersWG.Go(func() {
+		defer close(outCh)
+		defer nc.log.Info("Leaving aggregate NATS listener loop")
+		nc.log.Info("Starting aggregate NATS listener loop")
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case val, ok := <-aggrKeyChan:
+				if !ok {
+					nc.log.Warning("Aggregate NATS channel closed unexpectedly")
+					return
+				}
+				if val == nil {
+					continue
+				}
+				nc.log.Debug("Incoming NATS KV update on '%s'!", val.Key())
+				natsMsg := common.NatsMsg{
+					Headers: nil,
+					Data:    val.Value(),
+					Subject: val.Key(),
+				}
+				select {
+				case outCh <- natsMsg:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	})
+
+	if !atLeastOneBucket {
+		return nil, errors.New("failed to watch any buckets")
+	}
+
+	return outCh, nil
+}
+
+func (nc *natsClient) GetObservations(ctx context.Context, domain string) (uint32, int, error) {
+	var obsVec uint32
+	ttl := math.MaxInt64
+
+	nc.okvMap.RLock()
+	defer nc.okvMap.RUnlock()
+
+	nc.okvMap.RLock()
+	okvm := nc.okvMap.m
+	nc.okvMap.RUnlock()
+	for obsStr, kv := range okvm {
+		subject := nc.genObservationSubject(domain, obsStr)
+
+		obsUint, ok := common.OBS_MAP[obsStr]
+		if !ok {
+			nc.log.Error("Unknown observation %s, will not look up in NATS", obsStr)
+			continue
+		}
+
+		status, err := kv.Status(ctx)
+		if err != nil {
+			nc.log.Error("Couldn't get bucket status for %s: %s", kv.Bucket(), err)
+			continue
+		}
+		ttlBucket := status.TTL()
+
+		val, err := kv.Get(ctx, subject)
+		if err == jetstream.ErrKeyNotFound {
+			nc.log.Debug("No %s observations for %s", obsStr, domain)
+			continue
+		} else if err != nil {
+			nc.log.Error("Couldn't get observation value for key %s: %s", subject, err)
+			continue
+		}
+
+		keyAge := time.Now().Sub(val.Created())
+		keyTtl := int(math.Round((ttlBucket - keyAge).Seconds()))
+		if keyTtl <= 0 {
+			nc.log.Warning("Bucket %s seems to contain outdated key %s", kv.Bucket(), subject)
+			continue
+		}
+
+		obsVec |= obsUint
+		if keyTtl < ttl {
+			ttl = keyTtl
+		}
+	}
+
+	/* If not updated, set to zero because something probably went bad and results are unreliable */
+	if ttl == math.MaxInt64 {
+		ttl = 0
+		obsVec = 0
+	}
+
+	return obsVec, ttl, nil
+}
+
+func (nc *natsClient) SendSouthboundObservation(msg string) error {
+	if nc.subjectSouthbound == "" {
+		nc.log.Error("Tried to send southbound observation without configured subject")
+		return common.ErrNotCompleted
+	}
+
+	// TODO really re-use connection to KV?
+	outMsg := []byte(msg)
+	err := nc.conn.Publish(nc.subjectSouthbound, outMsg)
+	if err != nil {
+		nc.log.Error("Couldn't publish %d bytes msg on %s", len(outMsg), nc.subjectSouthbound)
+		return err
+	} else {
+		nc.log.Debug("Successful publish on '%s'", nc.subjectSouthbound)
+	}
+
+	return nil
+}
+
+func (nc *natsClient) RemovePrefix(subject string) string {
+	subjectCut, ok := strings.CutPrefix(subject, nc.observationSubjectPrefix)
+	if !ok {
+		nc.log.Warning("Subject '%s' missing prefix '%s'", subject, nc.observationSubjectPrefix)
+	}
+
+	return strings.Trim(subjectCut, common.NATS_DELIM)
+}
+
 func (nc *natsClient) initObservationBuckets(buckets []ObservationBucket) error {
 	for _, b := range buckets {
 		_, ok := common.OBS_MAP[b.Observation]
@@ -410,6 +572,14 @@ func (nc *natsClient) attemptReuseBucket(ctx context.Context, bucket string) (je
 	nc.log.Info("Reusing bucket '%s'. TTL: %d, LimitMarketTTL: %d, Size: %.2f MB.", status.Bucket(), ttl, lmTtl, size)
 
 	return kv, nil
+}
+
+func (nc *natsClient) genObservationSubject(domain string, obs string) string {
+	prefix := strings.Join([]string{nc.observationSubjectPrefix, obs}, common.NATS_DELIM)
+
+	subject := _getSubjectFromFqdn(domain, prefix, "")
+
+	return common.NormalizeNatsSubject(subject)
 }
 
 /* If fqdn is "www.example.com", output will be "prefix.com.example.www.suffix" */
