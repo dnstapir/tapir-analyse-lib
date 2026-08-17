@@ -4,7 +4,7 @@ go 1.26.1
 
 require (
 	github.com/dnstapir/edm v0.0.0-20260226140325-d0441597d9e7
-	github.com/lestrrat-go/jwx/v3 v3.1.1
+	github.com/lestrrat-go/jwx/v3 v3.2.0
 	github.com/nats-io/nats.go v1.52.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	golang.org/x/net v0.57.0
@@ -15,10 +15,10 @@ require (
 	github.com/goccy/go-json v0.10.6 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/lestrrat-go/blackmagic v1.0.4 // indirect
-	github.com/lestrrat-go/dsig v1.2.1 // indirect
+	github.com/lestrrat-go/dsig v1.3.0 // indirect
 	github.com/lestrrat-go/dsig-secp256k1 v1.0.0 // indirect
 	github.com/lestrrat-go/httpcc v1.0.1 // indirect
-	github.com/lestrrat-go/httprc/v3 v3.0.5 // indirect
+	github.com/lestrrat-go/httprc/v3 v3.0.6 // indirect
 	github.com/lestrrat-go/option/v2 v2.0.0 // indirect
 	github.com/miekg/dns v1.1.72 // indirect
 	github.com/nats-io/nkeys v0.4.15 // indirect
