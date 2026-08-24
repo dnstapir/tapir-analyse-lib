@@ -5,7 +5,7 @@ go 1.26.1
 require (
 	github.com/dnstapir/edm v0.0.0-20260226140325-d0441597d9e7
 	github.com/lestrrat-go/jwx/v3 v3.2.0
-	github.com/nats-io/nats.go v1.52.0
+	github.com/nats-io/nats.go v1.53.1
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	golang.org/x/net v0.57.0
 )
