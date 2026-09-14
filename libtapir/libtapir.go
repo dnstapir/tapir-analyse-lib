@@ -158,3 +158,25 @@ func GetETLDPlusOne(fqdn string) (string, error) {
 
 	return NormalizeDomainName(etld), err
 }
+
+func GetETLD(fqdn string) (string, bool) {
+	normalized := NormalizeDomainName(fqdn)
+
+	/* Normalization ensures a trailing dot, but PSL does not like that */
+	trimmed := strings.Trim(normalized, ".")
+
+	etld, icann := publicsuffix.PublicSuffix(trimmed)
+
+	valid := false
+	if icann {
+		valid = true
+	} else if strings.IndexByte(etld, '.') >= 0 {
+		valid = true
+	}
+
+	if !valid {
+		return "", false
+	}
+
+	return NormalizeDomainName(etld), true
+}
