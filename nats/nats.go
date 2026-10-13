@@ -26,6 +26,8 @@ type Conf struct {
 	ObservationSubjectPrefix string              `toml:"observation_subject_prefix"`
 	ObservationBuckets       []ObservationBucket `toml:"observation_buckets"`
 	SeenDomainsBucket        Bucket              `toml:"seen_domains_bucket"`
+	TagSubjectPrefix         string              `toml:"tag_subject_prefix"`
+	TagBucket                Bucket              `toml:"tag_bucket"`
 	SeenDomainsSubjectPrefix string              `toml:"seen_domains_subject_prefix"`
 	SubjectSouthbound        string              `toml:"subject_southbound"`
 	PrivateSubjectPrefix     string              `toml:"private_subject_prefix"`
@@ -55,6 +57,8 @@ type natsClient struct {
 	okvMap                   obsKvMap
 	observationSubjectPrefix string
 	kvSeenDomains            jetstream.KeyValue
+	tagSubjectPrefix         string
+	kvTags                   jetstream.KeyValue
 	seenDomainsSubjectPrefix string
 	subjectSouthbound        string
 	kvPrivate                jetstream.KeyValue // TODO currently unused
@@ -121,8 +125,8 @@ func Create(conf Conf) (*natsClient, error) {
 		nc.log.Info("Configuration for private bucket missing, will not create")
 	} else {
 		nc.privateSubjectPrefix = common.NormalizeNatsSubjectPrefix(conf.PrivateSubjectPrefix)
-
-		kvPriv, err := nc.setupBucket(conf.PrivateBucket)
+		var kvPriv jetstream.KeyValue
+		kvPriv, err = nc.setupBucket(conf.PrivateBucket)
 		if err != nil {
 			nc.log.Error("Could not initialize private bucket in NATS")
 			return nil, err
@@ -134,12 +138,26 @@ func Create(conf Conf) (*natsClient, error) {
 		nc.log.Info("Configuration for seen domains bucket missing, will not create")
 	} else {
 		nc.seenDomainsSubjectPrefix = common.NormalizeNatsSubjectPrefix(conf.SeenDomainsSubjectPrefix)
-		kvSeenDom, err := nc.setupBucket(conf.SeenDomainsBucket)
+		var kvSeenDom jetstream.KeyValue
+		kvSeenDom, err = nc.setupBucket(conf.SeenDomainsBucket)
 		if err != nil {
 			nc.log.Error("Could not initialize seen domains bucket in NATS")
 			return nil, err
 		}
 		nc.kvSeenDomains = kvSeenDom
+	}
+
+	if conf.TagSubjectPrefix == "" || conf.TagBucket.Name == "" {
+		nc.log.Info("Configuration for tag bucket missing, will not create")
+	} else {
+		nc.tagSubjectPrefix = common.NormalizeNatsSubjectPrefix(conf.TagSubjectPrefix)
+		var kvTags jetstream.KeyValue
+		kvTags, err = nc.setupBucket(conf.TagBucket)
+		if err != nil {
+			nc.log.Error("Could not initialize tag bucket in NATS")
+			return nil, err
+		}
+		nc.kvTags = kvTags
 	}
 
 	nc.subjectSouthbound = strings.Trim(conf.SubjectSouthbound, common.NATS_DELIM)
@@ -152,10 +170,11 @@ func Create(conf Conf) (*natsClient, error) {
 	nc.okvMap.Unlock()
 
 	if conf.ObservationSubjectPrefix == "" {
-		nc.log.Error("Bad observation subject prefix when creating NATS client")
-		return nil, common.ErrBadParam
+		nc.log.Info("No observation subject prefix configured for NATS client, functionality will be limited")
+		nc.observationSubjectPrefix = ""
+	} else {
+		nc.observationSubjectPrefix = common.NormalizeNatsSubjectPrefix(conf.ObservationSubjectPrefix)
 	}
-	nc.observationSubjectPrefix = common.NormalizeNatsSubjectPrefix(conf.ObservationSubjectPrefix)
 
 	err = nc.initObservationBuckets(conf.ObservationBuckets)
 	if err != nil {
@@ -232,6 +251,11 @@ func (nc *natsClient) SetObservation(ctx context.Context, domain, obs string) er
 		return common.ErrNotCompleted
 	}
 
+	if nc.observationSubjectPrefix == "" {
+		nc.log.Error("Attempted to set observation without configuring prefix")
+		return common.ErrNotCompleted
+	}
+
 	nc.okvMap.RLock()
 	kv, ok := nc.okvMap.m[obs]
 	nc.okvMap.RUnlock()
@@ -258,6 +282,44 @@ func (nc *natsClient) SetObservation(ctx context.Context, domain, obs string) er
 		}
 	} else if err == nil {
 		nc.log.Debug("Observation '%s' set for domain '%s'", obs, domain)
+	} else {
+		nc.log.Error("Couldn't create key '%s': '%s'", subject, err)
+		return err
+	}
+
+	return nil
+}
+
+func (nc *natsClient) SetTag(ctx context.Context, domain string, tag common.DNSTapirTag, value string) error {
+	if nc.analystID == "" {
+		nc.log.Error("Attempted to set tag without having an analyst ID configured")
+		return common.ErrNotCompleted
+	}
+
+	if nc.kvTags == nil {
+		nc.log.Error("No NATS KV store configured for keeping track of tags")
+		return common.ErrNotCompleted
+	}
+
+	flipped := libtapir.FlipDomainName(domain)
+	subjectRaw := strings.Join(
+		[]string{
+			nc.tagSubjectPrefix,
+			tag.String(),
+			flipped,
+		},
+		common.NATS_DELIM)
+	subject := common.NormalizeNatsSubject(subjectRaw)
+
+	_, err := nc.kvTags.Create(ctx, subject, []byte(value)) // TODO really create here?
+	if errors.Is(err, jetstream.ErrKeyExists) {
+		_, err := nc.kvTags.Put(ctx, subject, []byte(value))
+		if err != nil {
+			nc.log.Error("Couldn't set tag key '%s': '%s'", subject, err)
+			return err
+		}
+	} else if err == nil {
+		nc.log.Debug("Tag '%s' set for domain '%s'", tag.String(), domain)
 	} else {
 		nc.log.Error("Couldn't create key '%s': '%s'", subject, err)
 		return err
@@ -330,6 +392,11 @@ func (nc *natsClient) AddDomain(ctx context.Context, domain string, reporter str
 }
 
 func (nc *natsClient) WatchObservations(ctx context.Context) (<-chan common.NatsMsg, error) {
+	if nc.observationSubjectPrefix == "" {
+		nc.log.Error("Attempted to watch observations without configuring prefix")
+		return nil, common.ErrNotCompleted
+	}
+
 	aggrKeyChan := make(chan jetstream.KeyValueEntry, 128) // TODO adjustable buffer size?
 	outCh := make(chan common.NatsMsg, 32)                 // TODO adjustable buffer size?
 	atLeastOneBucket := false
@@ -401,6 +468,11 @@ func (nc *natsClient) WatchObservations(ctx context.Context) (<-chan common.Nats
 }
 
 func (nc *natsClient) GetObservations(ctx context.Context, domain string) (uint32, int, error) {
+	if nc.observationSubjectPrefix == "" {
+		nc.log.Error("Attempted to get observations without configuring prefix")
+		return 0, 0, common.ErrNotCompleted
+	}
+
 	var obsVec uint32
 	ttl := math.MaxInt64
 
@@ -477,6 +549,11 @@ func (nc *natsClient) SendSouthboundObservation(msg string) error {
 }
 
 func (nc *natsClient) RemovePrefix(subject string) string {
+	if nc.observationSubjectPrefix == "" {
+		nc.log.Warning("Attempted to remove observations subject prefix without configuring prefix, no change was made")
+		return subject
+	}
+
 	subjectCut, ok := strings.CutPrefix(subject, nc.observationSubjectPrefix)
 	if !ok {
 		nc.log.Warning("Subject '%s' missing prefix '%s'", subject, nc.observationSubjectPrefix)
