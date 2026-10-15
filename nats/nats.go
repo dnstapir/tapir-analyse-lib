@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"strconv"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -59,6 +60,7 @@ type natsClient struct {
 	subjectSouthbound        string
 	kvPrivate                jetstream.KeyValue // TODO currently unused
 	privateSubjectPrefix     string
+	counterMu				 sync.Mutex
 	watchersWG               sync.WaitGroup
 }
 
@@ -151,16 +153,16 @@ func Create(conf Conf) (*natsClient, error) {
 	nc.okvMap.m = make(map[string]jetstream.KeyValue)
 	nc.okvMap.Unlock()
 
-	if conf.ObservationSubjectPrefix == "" {
-		nc.log.Error("Bad observation subject prefix when creating NATS client")
-		return nil, common.ErrBadParam
-	}
-	nc.observationSubjectPrefix = common.NormalizeNatsSubjectPrefix(conf.ObservationSubjectPrefix)
+	if conf.ObservationSubjectPrefix == "" { // Observation bucket is now optional
+		nc.log.Info("Configuration for observation bucket missing, will not create")
+	} else {
+		nc.observationSubjectPrefix = common.NormalizeNatsSubjectPrefix(conf.ObservationSubjectPrefix)
 
-	err = nc.initObservationBuckets(conf.ObservationBuckets)
-	if err != nil {
-		nc.log.Error("Could not initialize observation buckets in NATS")
-		return nil, err
+		err = nc.initObservationBuckets(conf.ObservationBuckets)
+		if err != nil {
+			nc.log.Error("Could not initialize observation buckets in NATS")
+			return nil, err
+		}
 	}
 
 	return nc, nil
@@ -265,6 +267,41 @@ func (nc *natsClient) SetObservation(ctx context.Context, domain, obs string) er
 
 	return nil
 }
+
+func (nc *natsClient) IncrCounter(ctx context.Context, key string) error {
+	if nc.kvPrivate == nil {
+		nc.log.Error("No private NATS KV store configured")
+		return common.ErrNotCompleted
+	}
+	subject := strings.Trim(nc.privateSubjectPrefix, common.NATS_DELIM)
+	subject = subject + common.NATS_DELIM + strings.Trim(key, common.NATS_DELIM)
+
+	nc.counterMu.Lock()
+	defer nc.counterMu.Unlock()
+
+	var cur uint64
+	entry, err := nc.kvPrivate.Get(ctx, subject)
+	switch {
+	case errors.Is(err, jetstream.ErrKeyNotFound):
+		cur = 0
+	case err != nil:
+		return err
+	default:
+		cur, err = strconv.ParseUint(string(entry.Value()), 10, 64)
+		if err != nil {
+			return fmt.Errorf("corrupt counter '%s': %w", subject, err)
+		}
+	}
+
+	cur++
+
+	if _, err := nc.kvPrivate.Put(ctx, subject, []byte(strconv.FormatUint(cur, 10))); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 
 func (nc *natsClient) AddDomain(ctx context.Context, domain string, reporter string) (bool, error) {
 	if nc.kvSeenDomains == nil {
