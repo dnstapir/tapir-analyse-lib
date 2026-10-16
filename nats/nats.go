@@ -274,8 +274,22 @@ func (nc *natsClient) SetPrivate(ctx context.Context, key string, value string) 
 		nc.log.Error("No private NATS KV store configured")
 		return common.ErrNotCompleted
 	}
-	subject := strings.Trim(nc.privateSubjectPrefix, common.NATS_DELIM)
-	subject = subject + common.NATS_DELIM + strings.Trim(key, common.NATS_DELIM)
+	if key == "" {
+		return common.ErrBadParam
+	}
+
+	var subject string
+	prefix := strings.Trim(nc.privateSubjectPrefix, common.NATS_DELIM)
+	key = strings.Trim(key, common.NATS_DELIM)
+
+	switch {
+	case prefix == "":
+		subject = key
+	case key == prefix || strings.HasPrefix(key, prefix+common.NATS_DELIM):
+		subject = key // already prefixed
+	default:
+		subject = prefix + common.NATS_DELIM + key
+	}
 
 	if _, err := nc.kvPrivate.Put(ctx, subject, []byte(value)); err != nil {
 		return err
@@ -289,8 +303,22 @@ func (nc *natsClient) GetPrivate(ctx context.Context, key string) (string, error
 		nc.log.Error("No private NATS KV store configured")
 		return "", common.ErrNotCompleted
 	}
-	subject := strings.Trim(nc.privateSubjectPrefix, common.NATS_DELIM)
-	subject = subject + common.NATS_DELIM + strings.Trim(key, common.NATS_DELIM)
+	if key == "" {
+		return "", common.ErrBadParam
+	}
+
+	var subject string
+	prefix := strings.Trim(nc.privateSubjectPrefix, common.NATS_DELIM)
+	key = strings.Trim(key, common.NATS_DELIM)
+
+	switch {
+	case prefix == "":
+		subject = key
+	case key == prefix || strings.HasPrefix(key, prefix+common.NATS_DELIM):
+		subject = key // already prefixed
+	default:
+		subject = prefix + common.NATS_DELIM + key
+	}
 
 	entry, err := nc.kvPrivate.Get(ctx, subject)
 	if err != nil {
@@ -300,7 +328,40 @@ func (nc *natsClient) GetPrivate(ctx context.Context, key string) (string, error
 	return string(entry.Value()), nil
 }
 
-func (nc *natsClient) IncrCounter(ctx context.Context, key string) error {
+func (nc *natsClient) ListPrivateKeys(ctx context.Context, pattern string) ([]string, error) {
+	if nc.kvPrivate == nil {
+		nc.log.Error("No private NATS KV store configured")
+		return nil, common.ErrNotCompleted
+	}
+	filter := strings.Trim(nc.privateSubjectPrefix, common.NATS_DELIM)
+	filter = filter + common.NATS_DELIM + strings.Trim(pattern, common.NATS_DELIM)
+
+	lister, err := nc.kvPrivate.ListKeysFiltered(ctx, filter)
+	if err != nil {
+		nc.log.Error("Couldn't list keys matching '%s': %s", filter, err)
+		return nil, err
+	}
+	defer func() { _ = lister.Stop() }()
+
+	keys := make([]string, 0)
+	
+	for key := range lister.Keys() {
+		keys = append(keys, key)
+	}
+
+	// The channel also closes early if ctx is cancelled, which would
+	// otherwise look like a short but successful result
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	slices.Sort(keys)
+	return keys, nil
+}
+
+
+
+func (nc *natsClient) IncrCounter(ctx context.Context, key string) (uint64, error) {
 	nc.counterMu.Lock()
 	defer nc.counterMu.Unlock()
 
@@ -310,21 +371,21 @@ func (nc *natsClient) IncrCounter(ctx context.Context, key string) error {
 	case errors.Is(err, jetstream.ErrKeyNotFound):
 		cur = 0
 	case err != nil:
-		return err
+		return 0, err
 	default:
 		cur, err = strconv.ParseUint(entry, 10, 64)
 		if err != nil {
-			return fmt.Errorf("corrupt counter '%s': %w", key, err)
+			return 0, fmt.Errorf("corrupt counter '%s': %w", key, err)
 		}
 	}
 
 	cur++
 
 	if err := nc.SetPrivate(ctx, key, strconv.FormatUint(cur, 10)); err != nil {
-		return err
+		return 0, err
 	}
 
-	return nil
+	return cur, nil
 }
 
 
