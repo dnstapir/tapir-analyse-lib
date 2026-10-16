@@ -40,6 +40,7 @@ type ObservationBucket struct {
 	Observation string `toml:"observation"`
 }
 
+
 type Bucket struct {
 	Name   string `toml:"name"`
 	Create bool   `toml:"create"`
@@ -58,7 +59,7 @@ type natsClient struct {
 	kvSeenDomains            jetstream.KeyValue
 	seenDomainsSubjectPrefix string
 	subjectSouthbound        string
-	kvPrivate                jetstream.KeyValue // TODO currently unused
+	kvPrivate                jetstream.KeyValue 
 	privateSubjectPrefix     string
 	counterMu				 sync.Mutex
 	watchersWG               sync.WaitGroup
@@ -268,7 +269,7 @@ func (nc *natsClient) SetObservation(ctx context.Context, domain, obs string) er
 	return nil
 }
 
-func (nc *natsClient) IncrCounter(ctx context.Context, key string) error {
+func (nc *natsClient) SetPrivate(ctx context.Context, key string, value string) error {
 	if nc.kvPrivate == nil {
 		nc.log.Error("No private NATS KV store configured")
 		return common.ErrNotCompleted
@@ -276,26 +277,50 @@ func (nc *natsClient) IncrCounter(ctx context.Context, key string) error {
 	subject := strings.Trim(nc.privateSubjectPrefix, common.NATS_DELIM)
 	subject = subject + common.NATS_DELIM + strings.Trim(key, common.NATS_DELIM)
 
+	if _, err := nc.kvPrivate.Put(ctx, subject, []byte(value)); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (nc *natsClient) GetPrivate(ctx context.Context, key string) (string, error) {
+	if nc.kvPrivate == nil {
+		nc.log.Error("No private NATS KV store configured")
+		return "", common.ErrNotCompleted
+	}
+	subject := strings.Trim(nc.privateSubjectPrefix, common.NATS_DELIM)
+	subject = subject + common.NATS_DELIM + strings.Trim(key, common.NATS_DELIM)
+
+	entry, err := nc.kvPrivate.Get(ctx, subject)
+	if err != nil {
+		return "", err
+	}
+
+	return string(entry.Value()), nil
+}
+
+func (nc *natsClient) IncrCounter(ctx context.Context, key string) error {
 	nc.counterMu.Lock()
 	defer nc.counterMu.Unlock()
 
 	var cur uint64
-	entry, err := nc.kvPrivate.Get(ctx, subject)
+	entry, err := nc.GetPrivate(ctx, key)
 	switch {
 	case errors.Is(err, jetstream.ErrKeyNotFound):
 		cur = 0
 	case err != nil:
 		return err
 	default:
-		cur, err = strconv.ParseUint(string(entry.Value()), 10, 64)
+		cur, err = strconv.ParseUint(entry, 10, 64)
 		if err != nil {
-			return fmt.Errorf("corrupt counter '%s': %w", subject, err)
+			return fmt.Errorf("corrupt counter '%s': %w", key, err)
 		}
 	}
 
 	cur++
 
-	if _, err := nc.kvPrivate.Put(ctx, subject, []byte(strconv.FormatUint(cur, 10))); err != nil {
+	if err := nc.SetPrivate(ctx, key, strconv.FormatUint(cur, 10)); err != nil {
 		return err
 	}
 
