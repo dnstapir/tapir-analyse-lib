@@ -291,6 +291,10 @@ func (nc *natsClient) SetObservation(ctx context.Context, domain, obs string) er
 }
 
 func (nc *natsClient) SetTag(ctx context.Context, domain string, tag common.DNSTapirTag, value string) error {
+	return nc.SetTagStr(ctx, domain, tag.String(), value)
+}
+
+func (nc *natsClient) SetTagStr(ctx context.Context, domain string, tagStr string, value string) error {
 	if nc.analystID == "" {
 		nc.log.Error("Attempted to set tag without having an analyst ID configured")
 		return common.ErrNotCompleted
@@ -301,11 +305,20 @@ func (nc *natsClient) SetTag(ctx context.Context, domain string, tag common.DNST
 		return common.ErrNotCompleted
 	}
 
+	tag := common.StringToTag(tagStr)
+	tagClass := "custom"
+	tagLabel := tagStr
+	if tag != common.TagUndefined {
+		tagClass = "well-defined"
+		tagLabel = tag.String()
+	}
+
 	flipped := libtapir.FlipDomainName(domain)
 	subjectRaw := strings.Join(
 		[]string{
 			nc.tagSubjectPrefix,
-			tag.String(),
+			tagClass,
+			tagLabel,
 			flipped,
 		},
 		common.NATS_DELIM)
