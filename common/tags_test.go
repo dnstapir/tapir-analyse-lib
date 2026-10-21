@@ -25,3 +25,25 @@ func TestConvertTagToString(t *testing.T) {
 		})
 	}
 }
+
+func TestConvertStringToTag(t *testing.T) {
+	var tests = []struct {
+		name     string
+		indata   string
+		expected DNSTapirTag
+	}{
+		{"test_anomalous_qtype_distribution", "anomalous_qtype_distribution", TagAnomalousQtypeDistribution},
+		{"test_internal_testing", "internal_testing", TagInternalTesting},
+		{"test_undefined", "undefined", TagUndefined},
+		{"test_undefined_garbage", "d12380djiuwefi", TagUndefined},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := StringToTag(tt.indata)
+			if got != tt.expected {
+				t.Fatalf("Got: '%d', Expected: '%d'", got, tt.expected)
+			}
+		})
+	}
+}

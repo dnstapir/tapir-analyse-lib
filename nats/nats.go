@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
-	"strconv"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -42,7 +42,6 @@ type ObservationBucket struct {
 	Observation string `toml:"observation"`
 }
 
-
 type Bucket struct {
 	Name   string `toml:"name"`
 	Create bool   `toml:"create"`
@@ -63,9 +62,9 @@ type natsClient struct {
 	kvTags                   jetstream.KeyValue
 	seenDomainsSubjectPrefix string
 	subjectSouthbound        string
-	kvPrivate                jetstream.KeyValue 
+	kvPrivate                jetstream.KeyValue
 	privateSubjectPrefix     string
-	counterMu				 sync.Mutex
+	counterMu                sync.Mutex
 	watchersWG               sync.WaitGroup
 }
 
@@ -294,6 +293,10 @@ func (nc *natsClient) SetObservation(ctx context.Context, domain, obs string) er
 }
 
 func (nc *natsClient) SetTag(ctx context.Context, domain string, tag common.DNSTapirTag, value string) error {
+	return nc.SetTagStr(ctx, domain, tag.String(), value)
+}
+
+func (nc *natsClient) SetTagStr(ctx context.Context, domain string, tagStr string, value string) error {
 	if nc.analystID == "" {
 		nc.log.Error("Attempted to set tag without having an analyst ID configured")
 		return common.ErrNotCompleted
@@ -304,11 +307,20 @@ func (nc *natsClient) SetTag(ctx context.Context, domain string, tag common.DNST
 		return common.ErrNotCompleted
 	}
 
+	tag := common.StringToTag(tagStr)
+	tagClass := "custom"
+	tagLabel := tagStr
+	if tag != common.TagUndefined {
+		tagClass = "well-defined"
+		tagLabel = tag.String()
+	}
+
 	flipped := libtapir.FlipDomainName(domain)
 	subjectRaw := strings.Join(
 		[]string{
 			nc.tagSubjectPrefix,
-			tag.String(),
+			tagClass,
+			tagLabel,
 			flipped,
 		},
 		common.NATS_DELIM)
@@ -361,7 +373,6 @@ func (nc *natsClient) SetPrivate(ctx context.Context, key string, value string) 
 	return nil
 }
 
-
 func (nc *natsClient) GetPrivate(ctx context.Context, key string) (string, error) {
 	if nc.kvPrivate == nil {
 		nc.log.Error("No private NATS KV store configured")
@@ -408,7 +419,7 @@ func (nc *natsClient) ListPrivateKeys(ctx context.Context, pattern string) ([]st
 	defer func() { _ = lister.Stop() }()
 
 	keys := make([]string, 0)
-	
+
 	for key := range lister.Keys() {
 		keys = append(keys, key)
 	}
@@ -450,7 +461,6 @@ func (nc *natsClient) IncrCounter(ctx context.Context, key string) (uint64, erro
 
 	return cur, nil
 }
-
 
 func (nc *natsClient) AddDomain(ctx context.Context, domain string, reporter string) (bool, error) {
 	if nc.kvSeenDomains == nil {

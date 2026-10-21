@@ -2,6 +2,7 @@ package common
 
 // TODO consider similar pattern for observations.go for sync reasons
 import (
+	"strings"
 	"sync"
 )
 
@@ -21,13 +22,30 @@ var tagToString = map[DNSTapirTag]string{
 }
 
 func (t DNSTapirTag) String() string {
+	var tagStr string
+
 	lock.RLock()
-	tagStr := tagToString[t]
-
 	if t >= TagUndefined {
-		return tagToString[TagUndefined]
+		tagStr = tagToString[TagUndefined]
+	} else {
+		tagStr = tagToString[t]
 	}
-
 	lock.RUnlock()
+
 	return tagStr
+}
+
+func StringToTag(str string) DNSTapirTag {
+	tag := TagUndefined
+
+	lock.RLock()
+	for t, s := range tagToString { // TODO introduce reverse map instead?
+		if s == strings.ToLower(str) {
+			tag = t
+			break
+		}
+	}
+	lock.RUnlock()
+
+	return tag
 }

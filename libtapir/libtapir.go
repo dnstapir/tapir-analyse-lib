@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"slices"
 	"strings"
 	"time"
-	"math"
 
 	"golang.org/x/net/publicsuffix"
 
