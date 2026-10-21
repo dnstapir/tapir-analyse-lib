@@ -443,7 +443,7 @@ func (nc *natsClient) IncrCounter(ctx context.Context, key string) (uint64, erro
 
 	cur++
 
-	err := nc.SetPrivate(ctx, key, strconv.FormatUint(cur, 10))
+	err = nc.SetPrivate(ctx, key, strconv.FormatUint(cur, 10))
 	if err != nil {
 		return 0, err
 	}
