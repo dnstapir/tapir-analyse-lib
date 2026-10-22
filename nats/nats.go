@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/rand/v2"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +19,13 @@ import (
 	"github.com/dnstapir/tapir-analyse-lib/common"
 	"github.com/dnstapir/tapir-analyse-lib/libtapir"
 	"github.com/dnstapir/tapir-analyse-lib/logger"
+)
+
+const MAX_INCR_RETRIES = 20
+
+var (
+	errCounterOverflow   = errors.New("counter overflow")
+	errCounterContention = errors.New("too much contention on counter")
 )
 
 type Conf struct {
@@ -61,8 +70,9 @@ type natsClient struct {
 	kvTags                   jetstream.KeyValue
 	seenDomainsSubjectPrefix string
 	subjectSouthbound        string
-	kvPrivate                jetstream.KeyValue // TODO currently unused
+	kvPrivate                jetstream.KeyValue
 	privateSubjectPrefix     string
+	counterMu                sync.Mutex
 	watchersWG               sync.WaitGroup
 }
 
@@ -339,6 +349,156 @@ func (nc *natsClient) SetTagStr(ctx context.Context, domain string, tagStr strin
 	}
 
 	return nil
+}
+
+func (nc *natsClient) privateSubject(key string) (string, error) {
+	prefix := strings.Trim(nc.privateSubjectPrefix, common.NATS_DELIM)
+	key = strings.Trim(key, common.NATS_DELIM)
+
+	if key == "" {
+		return "", common.ErrBadParam
+	}
+
+	switch {
+	case prefix == "":
+		return key, nil
+	case key == prefix || strings.HasPrefix(key, prefix+common.NATS_DELIM):
+		return key, nil // already prefixed
+	default:
+		return prefix + common.NATS_DELIM + key, nil
+	}
+}
+
+func (nc *natsClient) SetPrivate(ctx context.Context, key string, value string) error {
+	if nc.kvPrivate == nil {
+		nc.log.Error("No private NATS KV store configured")
+		return common.ErrNotCompleted
+	}
+
+	subject, err := nc.privateSubject(key)
+	if err != nil {
+		return err
+	}
+
+	_, err = nc.kvPrivate.Put(ctx, subject, []byte(value))
+	return nil
+}
+
+func (nc *natsClient) GetPrivate(ctx context.Context, key string) (string, error) {
+	if nc.kvPrivate == nil {
+		nc.log.Error("No private NATS KV store configured")
+		return "", common.ErrNotCompleted
+	}
+
+	subject, err := nc.privateSubject(key)
+	if err != nil {
+		return "", err
+	}
+
+	entry, err := nc.kvPrivate.Get(ctx, subject)
+	if err != nil {
+		return "", err
+	}
+
+	return string(entry.Value()), nil
+}
+
+func (nc *natsClient) ListPrivateKeys(ctx context.Context, pattern string) ([]string, error) {
+	if nc.kvPrivate == nil {
+		nc.log.Error("No private NATS KV store configured")
+		return nil, common.ErrNotCompleted
+	}
+	filter := strings.Trim(nc.privateSubjectPrefix, common.NATS_DELIM)
+	filter = filter + common.NATS_DELIM + strings.Trim(pattern, common.NATS_DELIM)
+
+	lister, err := nc.kvPrivate.ListKeysFiltered(ctx, filter)
+	if err != nil {
+		nc.log.Error("Couldn't list keys matching '%s': %s", filter, err)
+		return nil, err
+	}
+	defer func() { _ = lister.Stop() }()
+
+	keys := make([]string, 0)
+
+	for key := range lister.Keys() {
+		keys = append(keys, key)
+	}
+
+	// The channel also closes early if ctx is cancelled, which would
+	// otherwise look like a short but successful result
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	slices.Sort(keys)
+	return slices.Compact(keys), nil
+}
+
+func (nc *natsClient) IncrCounter(ctx context.Context, key string) (uint64, error) {
+	if nc.kvPrivate == nil {
+		nc.log.Error("No private NATS KV store configured")
+		return 0, common.ErrNotCompleted
+	}
+
+	subject, err := nc.privateSubject(key)
+	if err != nil {
+		return 0, err
+	}
+
+	nc.counterMu.Lock()
+	defer nc.counterMu.Unlock()
+
+	for attempt := 0; attempt < MAX_INCR_RETRIES; attempt++ {
+		if attempt > 0 {
+			base := time.Duration(1<<min(attempt, 6)) * time.Millisecond
+			select {
+			case <-time.After(base + rand.N(base)):
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			}
+		}
+
+		var cur, rev uint64
+		missing := false
+
+		entry, err := nc.kvPrivate.Get(ctx, subject)
+		switch {
+		case errors.Is(err, jetstream.ErrKeyNotFound):
+			missing = true
+		case err != nil:
+			return 0, err
+		default:
+			cur, err = strconv.ParseUint(string(entry.Value()), 10, 64)
+			if err != nil {
+				return 0, fmt.Errorf("corrupt counter '%s': %w", key, err)
+			}
+			rev = entry.Revision()
+		}
+
+		if cur == math.MaxUint64 {
+			nc.log.Error("Counter '%s' is at the maximum value and cannot be incremented", key)
+			return 0, fmt.Errorf("counter '%s' is at max uint64: %w", key, errCounterOverflow)
+		}
+
+		cur++
+		val := []byte(strconv.FormatUint(cur, 10))
+
+		if missing {
+			_, err = nc.kvPrivate.Create(ctx, subject, val)
+		} else {
+			_, err = nc.kvPrivate.Update(ctx, subject, val, rev)
+		}
+		if err == nil {
+			return cur, nil
+		}
+		if errors.Is(err, jetstream.ErrKeyExists) {
+			nc.log.Debug("Revision conflict on counter '%s' (attempt %d), retrying", key, attempt+1)
+			continue
+		}
+		return 0, err
+	}
+
+	return 0, fmt.Errorf("counter '%s' after %d attempts: %w", key, MAX_INCR_RETRIES, errCounterContention)
 }
 
 func (nc *natsClient) AddDomain(ctx context.Context, domain string, reporter string) (bool, error) {

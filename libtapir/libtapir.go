@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -33,6 +34,34 @@ func ExtractDomain(msgJson []byte) (string, error) {
 	}
 
 	return NormalizeDomainName(newQnameEvent.Qname), nil
+}
+
+func ExtractQtype(msgJson []byte) (uint16, error) {
+	var newQnameEvent protocols.NewQnameJSON
+
+	dec := json.NewDecoder(bytes.NewReader(msgJson))
+	dec.DisallowUnknownFields()
+
+	err := dec.Decode(&newQnameEvent)
+	if err != nil {
+		return 0, err
+	}
+
+	_, err = dec.Token()
+	if err != io.EOF {
+		return 0, common.ErrBadJSON
+	}
+
+	if newQnameEvent.Qtype == nil {
+		return 0, common.ErrBadJSON // field missing or null
+	}
+
+	qtype := *newQnameEvent.Qtype
+	if qtype < 0 || qtype > math.MaxUint16 {
+		return 0, common.ErrBadJSON // not a valid DNS type
+	}
+
+	return uint16(qtype), nil
 }
 
 func GenerateObservationMsg(domainStr string, flags uint32, ttl int) (string, error) {
