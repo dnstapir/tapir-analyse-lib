@@ -24,7 +24,7 @@ import (
 const MAX_INCR_RETRIES = 20
 
 var (
-	errCounterOverflow = errors.New("counter overflow")
+	errCounterOverflow   = errors.New("counter overflow")
 	errCounterContention = errors.New("too much contention on counter")
 )
 
@@ -497,7 +497,7 @@ func (nc *natsClient) IncrCounter(ctx context.Context, key string) (uint64, erro
 		}
 		return 0, err
 	}
-	
+
 	return 0, fmt.Errorf("counter '%s' after %d attempts: %w", key, MAX_INCR_RETRIES, errCounterContention)
 }
 
