@@ -2,6 +2,7 @@ package common
 
 // TODO consider similar pattern for observations.go for sync reasons
 import (
+	"sort"
 	"strings"
 	"sync"
 )
@@ -48,4 +49,20 @@ func StringToTag(str string) DNSTapirTag {
 	lock.RUnlock()
 
 	return tag
+}
+
+func TagNames() []string {
+	names := make([]string, 0, len(tagToString))
+
+	lock.RLock()
+	for t, name := range tagToString {
+		if t == TagUndefined {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	lock.RUnlock()
+
+	return names
 }
