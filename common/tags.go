@@ -4,6 +4,7 @@ package common
 import (
 	"strings"
 	"sync"
+	"sort"
 )
 
 type DNSTapirTag uint32
@@ -48,4 +49,20 @@ func StringToTag(str string) DNSTapirTag {
 	lock.RUnlock()
 
 	return tag
+}
+
+func TagNames() []string {
+	names := make([]string, 0, len(tagToString))
+
+    lock.RLock()
+	for t, name := range tagToString {
+		if t == TagUndefined {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	lock.RUnlock()
+
+	return names
 }

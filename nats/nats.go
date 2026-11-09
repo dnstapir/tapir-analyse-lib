@@ -342,7 +342,7 @@ func (nc *natsClient) SetTagStr(ctx context.Context, domain string, tagStr strin
 			return err
 		}
 	} else if err == nil {
-		nc.log.Debug("Tag '%s' set for domain '%s'", tag.String(), domain)
+		nc.log.Debug("Tag '%s' (%s) set for domain '%s' with value '%s'", tagLabel, tagClass, domain, value)
 	} else {
 		nc.log.Error("Couldn't create key '%s': '%s'", subject, err)
 		return err
@@ -350,6 +350,73 @@ func (nc *natsClient) SetTagStr(ctx context.Context, domain string, tagStr strin
 
 	return nil
 }
+
+func (nc *natsClient) GetTagStr(ctx context.Context, domain string, tagStr string) (string, error) {
+	if nc.kvTags == nil {
+		nc.log.Error("No NATS KV store configured for keeping track of tags")
+		return "", common.ErrNotCompleted
+	}
+
+	tag := common.StringToTag(tagStr)
+	tagClass := "custom"
+	tagLabel := tagStr
+	if tag != common.TagUndefined {
+		tagClass = "well-defined"
+		tagLabel = tag.String()
+	}
+
+	flipped := libtapir.FlipDomainName(domain)
+	subjectRaw := strings.Join(
+		[]string{
+			nc.tagSubjectPrefix,
+			tagClass,
+			tagLabel,
+			flipped,
+		},
+		common.NATS_DELIM)
+	subject := common.NormalizeNatsSubject(subjectRaw)
+
+	entry, err := nc.kvTags.Get(ctx, subject)
+	if err != nil {
+		nc.log.Error("Couldn't get subject '%s': %s", subject, err)
+		return "", err
+	}
+
+	return string(entry.Value()), nil
+}
+
+func (nc *natsClient) ListTagKeys(ctx context.Context, pattern string) ([]string, error) {
+	if nc.kvTags == nil {
+		nc.log.Error("No NATS KV store configured for keeping track of tags")
+		return nil, common.ErrNotCompleted
+	}
+
+	filter := strings.Trim(nc.tagSubjectPrefix, common.NATS_DELIM)
+	filter = filter + common.NATS_DELIM + strings.Trim(pattern, common.NATS_DELIM)
+
+	lister, err := nc.kvTags.ListKeysFiltered(ctx, filter)
+	if err != nil {
+		nc.log.Error("Couldn't list keys matching '%s': %s", filter, err)
+		return nil, err
+	}
+	defer func() { _ = lister.Stop() }()
+
+	keys := make([]string, 0)
+
+	for key := range lister.Keys() {
+		keys = append(keys, key)
+	}
+
+	// The channel also closes early if ctx is cancelled, which would
+	// otherwise look like a short but successful result
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	slices.Sort(keys)
+	return slices.Compact(keys), nil
+}
+
 
 func (nc *natsClient) privateSubject(key string) (string, error) {
 	prefix := strings.Trim(nc.privateSubjectPrefix, common.NATS_DELIM)
