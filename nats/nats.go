@@ -417,7 +417,6 @@ func (nc *natsClient) ListTagKeys(ctx context.Context, pattern string) ([]string
 	return slices.Compact(keys), nil
 }
 
-
 func (nc *natsClient) privateSubject(key string) (string, error) {
 	prefix := strings.Trim(nc.privateSubjectPrefix, common.NATS_DELIM)
 	key = strings.Trim(key, common.NATS_DELIM)
