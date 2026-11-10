@@ -23,6 +23,8 @@ import (
 
 const MAX_INCR_RETRIES = 20
 
+const def_BUCKET_REPLICAS = 1
+
 var (
 	errCounterOverflow   = errors.New("counter overflow")
 	errCounterContention = errors.New("too much contention on counter")
@@ -51,9 +53,10 @@ type ObservationBucket struct {
 }
 
 type Bucket struct {
-	Name   string `toml:"name"`
-	Create bool   `toml:"create"`
-	Ttl    int    `toml:"ttl"`
+	Name     string `toml:"name"`
+	Create   bool   `toml:"create"`
+	Ttl      int    `toml:"ttl"`
+	Replicas int    `toml:"replicas"`
 }
 
 type natsClient struct {
@@ -845,6 +848,15 @@ func (nc *natsClient) setupBucket(b Bucket) (jetstream.KeyValue, error) {
 		} else {
 			kvCfg.TTL = time.Duration(b.Ttl) * time.Second
 			kvCfg.Description = fmt.Sprintf("TTL: %d seconds", b.Ttl)
+		}
+
+		if b.Replicas <= 0 {
+			nc.log.Info("No replica count set for bucket, using default '%d'", def_BUCKET_REPLICAS)
+			kvCfg.Replicas = def_BUCKET_REPLICAS
+
+		} else {
+			kvCfg.Replicas = b.Replicas
+			nc.log.Info("Bucket %s will have %d replicas", kvCfg.Bucket, kvCfg.Replicas)
 		}
 
 		kv, err = nc.js.CreateKeyValue(ctx, kvCfg)
