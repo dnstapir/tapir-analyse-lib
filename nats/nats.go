@@ -77,8 +77,8 @@ type natsClient struct {
 	privateSubjectPrefix     string
 	counterMu                sync.Mutex
 	watchersWG               sync.WaitGroup
-	watchersMu 				 sync.Mutex
-	watchers   				 []jetstream.KeyWatcher
+	watchersMu               sync.Mutex
+	watchers                 []jetstream.KeyWatcher
 }
 
 type obsKvMap struct {
@@ -951,7 +951,7 @@ func (nc *natsClient) WatchTags(ctx context.Context, tags []string) (<-chan jets
 				nc.log.Error("Invalid tag '%s' for watching", t)
 				return nil, common.ErrBadParam
 			}
-			filters = append(filters, nc.tagKeyBase(t) + common.NATS_DELIM + ">")
+			filters = append(filters, nc.tagKeyBase(t)+common.NATS_DELIM+">")
 		}
 	}
 
