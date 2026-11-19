@@ -15,6 +15,9 @@ const OBS_REGISTRY_INVESTIGATION_ENC uint32 = 8
 const OBS_DROPCATCH string = "dropcatch"
 const OBS_DROPCATCH_ENC uint32 = 16
 
+const OBS_DNS_TUNNEL string = "dns_tunnel"
+const OBS_DNS_TUNNEL_ENC uint32 = 32
+
 const OBS_LOOPTEST string = "looptest"
 const OBS_LOOPTEST_ENC uint32 = 1024
 
@@ -25,4 +28,5 @@ var OBS_MAP = map[string]uint32{
 	OBS_REGISTRY_INVESTIGATION: OBS_REGISTRY_INVESTIGATION_ENC,
 	OBS_DROPCATCH:              OBS_DROPCATCH_ENC,
 	OBS_LOOPTEST:               OBS_LOOPTEST_ENC,
+	OBS_DNS_TUNNEL:             OBS_DNS_TUNNEL_ENC,
 }
