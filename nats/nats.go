@@ -77,6 +77,8 @@ type natsClient struct {
 	privateSubjectPrefix     string
 	counterMu                sync.Mutex
 	watchersWG               sync.WaitGroup
+	watchersMu               sync.Mutex
+	watchers                 []jetstream.KeyWatcher
 }
 
 type obsKvMap struct {
@@ -251,6 +253,13 @@ func (nc *natsClient) ActivateSubscription(ctx context.Context) (<-chan common.N
 }
 
 func (nc *natsClient) Shutdown() error {
+	nc.watchersMu.Lock()
+	for _, w := range nc.watchers {
+		_ = w.Stop()
+	}
+	nc.watchers = nil
+	nc.watchersMu.Unlock()
+
 	nc.watchersWG.Wait()
 	if nc.conn != nil {
 		nc.conn.Close()
@@ -923,4 +932,86 @@ func _getSubjectFromFqdn(fqdn, natsPrefix, natsSuffix string) string {
 	}
 
 	return rev
+}
+
+func (nc *natsClient) WatchTags(ctx context.Context, tags []string) (<-chan jetstream.KeyValueEntry, error) {
+	if nc.kvTags == nil || nc.tagSubjectPrefix == "" {
+		nc.log.Error("No tag bucket/prefix configured, cannot watch tags")
+		return nil, common.ErrNotCompleted
+	}
+
+	var filters []string
+	if len(tags) == 0 {
+		// No tags configured: watch everything under the prefix
+		filters = []string{strings.Trim(nc.tagSubjectPrefix, common.NATS_DELIM) + common.NATS_DELIM + ">"}
+	} else {
+		for _, t := range tags {
+			t = strings.TrimSpace(t)
+			if t == "" || strings.ContainsAny(t, " *>") {
+				nc.log.Error("Invalid tag '%s' for watching", t)
+				return nil, common.ErrBadParam
+			}
+			filters = append(filters, nc.tagKeyBase(t)+common.NATS_DELIM+">")
+		}
+	}
+
+	w, err := nc.kvTags.WatchFiltered(ctx, filters)
+	if err != nil {
+		nc.log.Error("Couldn't watch tags %v: %s", filters, err)
+		return nil, err
+	}
+	nc.trackWatcher(w)
+	nc.log.Info("Watching tag filters %v", filters)
+
+	return w.Updates(), nil
+}
+
+func (nc *natsClient) trackWatcher(w jetstream.KeyWatcher) {
+	nc.watchersMu.Lock()
+	nc.watchers = append(nc.watchers, w)
+	nc.watchersMu.Unlock()
+}
+
+// derives tagClass from tagLabel and returns both
+func (nc *natsClient) tagKeyBase(tagStr string) string {
+	tag := common.StringToTag(tagStr)
+	tagClass := "custom"
+	tagLabel := tagStr
+	if tag != common.TagUndefined {
+		tagClass = "well-defined"
+		tagLabel = tag.String()
+	}
+
+	return strings.Join(
+		[]string{
+			strings.Trim(nc.tagSubjectPrefix, common.NATS_DELIM),
+			tagClass,
+			tagLabel,
+		},
+		common.NATS_DELIM)
+}
+
+// Full key for a tag on a domain
+func (nc *natsClient) TagKey(tagStr, domain string) string {
+	flipped := libtapir.FlipDomainName(domain)
+	return common.NormalizeNatsSubject(nc.tagKeyBase(tagStr) + common.NATS_DELIM + flipped)
+}
+
+// Extracts the domain from "<prefix>.<class>.<label>.<flipped-domain>"
+func (nc *natsClient) ParseTagKey(key string) (string, bool) {
+	prefix := strings.Trim(nc.tagSubjectPrefix, common.NATS_DELIM) + common.NATS_DELIM
+	rest, ok := strings.CutPrefix(key, prefix)
+	if !ok {
+		return "", false
+	}
+
+	parts := strings.SplitN(rest, common.NATS_DELIM, 3) // class, label, flipped domain
+	if len(parts) != 3 || parts[2] == "" {
+		return "", false
+	}
+	if parts[0] != "well-defined" && parts[0] != "custom" {
+		return "", false
+	}
+
+	return libtapir.FlipDomainName(parts[2]), true
 }
